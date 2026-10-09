@@ -1,0 +1,1063 @@
+-- ═══════════════════════════════════════════════
+-- HEADSHOT HUB v1.0 | Fluent UI Style (Compact)
+-- Sound: 18362692980
+-- ═══════════════════════════════════════════════
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local SoundService = game:GetService("SoundService")
+local localPlayer = Players.LocalPlayer
+local pg = localPlayer:WaitForChild("PlayerGui")
+
+local CONFIG = {
+    RingPosition = Vector3.new(197.55, 54.48, -28.74),
+    TickX = 0.84, TickY = 0.78,
+    SaveFile = "HeadshotHub/autoload.json",
+    SoundId = "rbxassetid://18362692980",
+}
+
+-- ★ FLUENT DARK THEME ★
+local THEME = {
+    Bg=Color3.fromRGB(20,20,22), BgLight=Color3.fromRGB(28,28,30),
+    BgRow=Color3.fromRGB(32,32,35), BgTab=Color3.fromRGB(24,24,26),
+    Purple=Color3.fromRGB(255,255,255), PurpleLight=Color3.fromRGB(255,255,255),
+    PurpleDark=Color3.fromRGB(80,80,85), Text=Color3.fromRGB(240,240,240),
+    TextDim=Color3.fromRGB(150,150,155), Off=Color3.fromRGB(60,60,65),
+    Green=Color3.fromRGB(74,222,128), Red=Color3.fromRGB(239,68,68),
+    Stroke=Color3.fromRGB(55,55,58),
+}
+
+local toggleStates = {
+    AutoArcade=false, AutoJoin=false, AutoLobby=false, AutoBecomeGuard=false,
+    FreePermGuard=false, AutoLoad=false,
+}
+
+local controllers = {
+    autoJoin = {enabled=false, task=nil},
+    autoLobby = {enabled=false, task=nil},
+    autoGuard = {enabled=false, task=nil},
+    permGuard = {enabled=false, task=nil},
+    wonFarm = {enabled=false},
+}
+
+local refs = {}
+
+local function notify(title, text, dur)
+    print("["..tostring(title).."] "..tostring(text))
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title=title, Text=text, Duration=dur or 3,
+        })
+    end)
+end
+
+local function playSound(id, vol)
+    pcall(function()
+        local s = Instance.new("Sound")
+        s.SoundId = id
+        s.Volume = vol or 1
+        s.Parent = SoundService
+        s:Play()
+        game:GetService("Debris"):AddItem(s, 5)
+        warn("[Headshot Hub] Sound playing:", tostring(id))
+    end)
+end
+
+local function isInGame()
+    local values = Workspace:FindFirstChild("Values")
+    local cg = values and values:FindFirstChild("CurrentGame")
+    if cg and cg.Value and cg.Value ~= "" then return cg.Value end
+    return nil
+end
+
+local function isGuard()
+    local ok, r = pcall(function() return localPlayer:GetAttribute("IsGuard") == true end)
+    return ok and r
+end
+
+local function teleportToRing()
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then pcall(function() hrp.CFrame = CFrame.new(CONFIG.RingPosition) end); return true end
+    return false
+end
+
+local function pressButton(btn)
+    if not btn or not btn.Parent then return false end
+    pcall(function()
+        if firesignal then
+            if btn.MouseButton1Click then firesignal(btn.MouseButton1Click) end
+            if btn.Activated then firesignal(btn.Activated) end
+        end
+    end)
+    pcall(function()
+        if getconnections then
+            for _, sig in ipairs({btn.MouseButton1Click, btn.MouseButton1Down, 
+                                  btn.MouseButton1Up, btn.Activated}) do
+                if sig then
+                    for _, c in pairs(getconnections(sig)) do c:Fire() end
+                end
+            end
+        end
+    end)
+    return true
+end
+
+local function getText(obj)
+    local ok, txt = pcall(function() return obj.Text end)
+    if ok then return tostring(txt or "") end
+    return ""
+end
+
+local function isVisible(obj)
+    if not obj or not obj.Parent then return false end
+    if not obj.Visible then return false end
+    local okSize, size = pcall(function() return obj.AbsoluteSize end)
+    if not okSize or size.X < 5 or size.Y < 5 then return false end
+    local okPos, pos = pcall(function() return obj.AbsolutePosition end)
+    if not okPos then return false end
+    local vp = workspace.CurrentCamera.ViewportSize
+    if pos.X + size.X < 0 or pos.Y + size.Y < 0 then return false end
+    if pos.X > vp.X or pos.Y > vp.Y then return false end
+    local p = obj.Parent
+    while p and p ~= pg and p ~= game do
+        if p:IsA("GuiObject") and not p.Visible then return false end
+        if p:IsA("ScreenGui") and not p.Enabled then return false end
+        p = p.Parent
+    end
+    return true
+end
+
+local function isTouchControl(obj)
+    local p = obj.Parent
+    while p do
+        if p.Name == "TouchGui" or p.Name == "TouchControlFrame" then return true end
+        if p.Name == "JumpButton" or p.Name == "Thumbstick" or p.Name == "Dpad" then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function findBtn(name)
+    local f = {}
+    for _, gui in ipairs(pg:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "HeadshotHub" and gui.Name ~= "HeadshotGuardDebug" then
+            for _, d in ipairs(gui:GetDescendants()) do
+                if d:IsA("GuiButton") and d.Name == name 
+                   and isVisible(d) and not isTouchControl(d) then
+                    table.insert(f, d)
+                end
+            end
+        end
+    end
+    return f
+end
+
+local function findBtnTxt(txt)
+    local f = {}
+    local lower = string.lower(txt)
+    for _, gui in ipairs(pg:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "HeadshotHub" and gui.Name ~= "HeadshotGuardDebug" then
+            for _, d in ipairs(gui:GetDescendants()) do
+                if d:IsA("GuiButton") and isVisible(d) and not isTouchControl(d) then
+                    if string.lower(getText(d)) == lower then
+                        table.insert(f, d)
+                    end
+                end
+            end
+        end
+    end
+    return f
+end
+
+local function findBtnTxtContains(txt)
+    local f = {}
+    local lower = string.lower(txt)
+    for _, gui in ipairs(pg:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "HeadshotHub" and gui.Name ~= "HeadshotGuardDebug" then
+            for _, d in ipairs(gui:GetDescendants()) do
+                if d:IsA("GuiButton") and isVisible(d) and not isTouchControl(d) then
+                    if string.lower(getText(d)):find(lower, 1, true) then
+                        table.insert(f, d)
+                    end
+                end
+            end
+        end
+    end
+    return f
+end
+
+local function findText(txt)
+    local f = {}
+    local lower = string.lower(txt)
+    for _, gui in ipairs(pg:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "HeadshotHub" and gui.Name ~= "HeadshotGuardDebug" then
+            for _, lbl in ipairs(gui:GetDescendants()) do
+                if lbl:IsA("TextLabel") and isVisible(lbl) and not isTouchControl(lbl) then
+                    if string.lower(getText(lbl)):find(lower, 1, true) then
+                        table.insert(f, lbl)
+                    end
+                end
+            end
+        end
+    end
+    return f
+end
+
+local function getGuardState()
+    local equips = findBtn("EquipTier1")
+    if #equips > 0 then return "RANKS" end
+    local equipsTxt = findBtnTxt("EQUIP")
+    local workers = findText("Worker")
+    if #equipsTxt > 0 or #workers > 0 then return "RANKS" end
+    local locks = findBtnTxt("LOCK IN")
+    if #locks > 0 then return "CONFIRM" end
+    if #findText("modify") > 0 then return "CONFIRM" end
+    local enroll = findText("enroll")
+    local greens = findBtn("Green")
+    if #enroll > 0 and #greens > 0 then return "ENROLL" end
+    if #greens > 0 then return "ENROLL" end
+    return "NONE"
+end
+
+-- DEBUG PANEL
+local debugSg = Instance.new("ScreenGui")
+debugSg.Name = "HeadshotGuardDebug"
+debugSg.ResetOnSpawn = false
+debugSg.IgnoreGuiInset = true
+debugSg.DisplayOrder = 99998
+debugSg.Parent = pg
+
+local debugPanel = Instance.new("TextLabel")
+debugPanel.Size = UDim2.new(0, 500, 0, 200)
+debugPanel.Position = UDim2.new(0.5, -250, 0, 80)
+debugPanel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+debugPanel.Text = "Starting..."
+debugPanel.TextColor3 = Color3.fromRGB(0, 255, 100)
+debugPanel.Font = Enum.Font.Code
+debugPanel.TextSize = 13
+debugPanel.BorderSizePixel = 3
+debugPanel.BorderColor3 = Color3.fromRGB(0, 255, 100)
+debugPanel.TextWrapped = true
+debugPanel.TextXAlignment = Enum.TextXAlignment.Left
+debugPanel.TextYAlignment = Enum.TextYAlignment.Top
+debugPanel.Visible = false
+debugPanel.Parent = debugSg
+
+local function addLog(t)
+    debugPanel.Text = tostring(t)
+end
+
+-- AUTO ARCADE
+local ArcadeEnabled = false
+local ArcadeTask = nil
+local ArcadeCurrent = nil
+local ArcadeCache = nil
+local ArcadeModule = nil
+
+local function findConsole()
+    if ArcadeCache and ArcadeCache.Parent then return ArcadeCache end
+    ArcadeCache = nil
+    for _, name in ipairs({"Arcade","Arcades","Map","Interactive","Objects"}) do
+        local f = Workspace:FindFirstChild(name)
+        if f then
+            local scr = f:FindFirstChild("Screen", true)
+            if scr and scr.Parent then
+                local par = scr.Parent
+                if par:FindFirstChild("SurfaceGui") or scr:FindFirstChild("SurfaceGui") then
+                    ArcadeCache = par; return par
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function runArcade()
+    if not ArcadeModule then
+        local ok, r = pcall(function()
+            return require(ReplicatedStorage.Modules.PlayableArcadeGame)
+        end)
+        if not ok or not r then return end
+        ArcadeModule = r
+    end
+    local c = findConsole()
+    if not c then return end
+    local char = localPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if ArcadeCurrent then
+        pcall(function() ArcadeCurrent.Stopping = true; ArcadeCurrent:Destroy() end)
+        ArcadeCurrent = nil
+    end
+    local g = ArcadeModule.new(c, hrp)
+    ArcadeCurrent = g
+    g:start()
+    local now = os.clock()
+    while g.State ~= "Running" and os.clock() - now < 3 do
+        if not ArcadeEnabled then
+            pcall(function() g:Destroy() end); ArcadeCurrent = nil; return
+        end
+        task.wait(0.1)
+    end
+    if not ArcadeEnabled or g.State ~= "Running" then
+        pcall(function() g:Destroy() end); ArcadeCurrent = nil; return
+    end
+    g.Score = 4499
+    if g.ScoreLabel then g.ScoreLabel.Text = "Score: 4499" end
+    table.clear(g.CalculateScore)
+    for _ = 1, 99 do table.insert(g.CalculateScore, "Coin") end
+    g:win("You Won! Congrats! :D")
+end
+
+local function toggleArcade(on)
+    ArcadeEnabled = on
+    if ArcadeTask then pcall(function() task.cancel(ArcadeTask) end); ArcadeTask = nil end
+    if not on then
+        if ArcadeCurrent then
+            pcall(function() ArcadeCurrent.Stopping = true; ArcadeCurrent:Destroy() end)
+            ArcadeCurrent = nil
+        end
+        ArcadeCache = nil
+        return
+    end
+    ArcadeTask = task.spawn(function()
+        while ArcadeEnabled do
+            pcall(runArcade)
+            task.wait(2)
+        end
+    end)
+end
+
+-- SAVE/LOAD
+local function saveConfig()
+    local data = {
+        AutoArcade=toggleStates.AutoArcade, AutoJoin=toggleStates.AutoJoin,
+        AutoLobby=toggleStates.AutoLobby,
+        AutoBecomeGuard=toggleStates.AutoBecomeGuard,
+        FreePermGuard=toggleStates.FreePermGuard, AutoLoad=toggleStates.AutoLoad,
+    }
+    pcall(function()
+        if isfolder and not isfolder("HeadshotHub") then makefolder("HeadshotHub") end
+    end)
+    local ok = false
+    pcall(function()
+        if writefile then
+            writefile(CONFIG.SaveFile, HttpService:JSONEncode(data))
+            ok = true
+        end
+    end)
+    if ok then notify("Settings", "Saved") end
+    return ok
+end
+
+local function loadConfig()
+    local d = nil
+    pcall(function()
+        if isfile and isfile(CONFIG.SaveFile) and readfile then
+            local c = readfile(CONFIG.SaveFile)
+            if c and c ~= "" then d = HttpService:JSONDecode(c) end
+        end
+    end)
+    return d
+end
+
+-- CONTROLLERS
+local function startAutoJoin()
+    if controllers.autoJoin.task then return end
+    controllers.autoJoin.enabled = true
+    controllers.autoJoin.task = task.spawn(function()
+        local lastPress = 0
+        local wasInGame = false
+        while controllers.autoJoin.enabled do
+            local g = isInGame()
+            if isGuard() then wasInGame = true; task.wait(2); continue end
+            if g then wasInGame = true; task.wait(2); continue end
+            if wasInGame then task.wait(3); wasInGame = false end
+            teleportToRing()
+            task.wait(0.8)
+            local hasPopup = false
+            for _, gui in ipairs(pg:GetChildren()) do
+                if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "HeadshotHub" and gui.Name ~= "HeadshotGuardDebug" then
+                    for _, c in ipairs(gui:GetDescendants()) do
+                        if c:IsA("TextLabel") and c.Visible then
+                            local t = string.lower(tostring(c.Text or ""))
+                            if t:find("join next") or t:find("join the queue") or t:find("next game") then
+                                hasPopup = true; break
+                            end
+                        end
+                    end
+                end
+                if hasPopup then break end
+            end
+            if hasPopup then
+                local now = tick()
+                if now - lastPress > 4 then
+                    local greens = findBtn("Green")
+                    if #greens > 0 then
+                        pressButton(greens[1])
+                        lastPress = now
+                    end
+                end
+            end
+            task.wait(1.5)
+        end
+        controllers.autoJoin.task = nil
+    end)
+end
+
+local function stopAutoJoin()
+    controllers.autoJoin.enabled = false
+    if controllers.autoJoin.task then
+        pcall(task.cancel, controllers.autoJoin.task)
+        controllers.autoJoin.task = nil
+    end
+end
+
+-- ★★★ AUTO LOBBY ★★★
+local function startAutoLobby()
+    if controllers.autoLobby.task then return end
+    controllers.autoLobby.enabled = true
+    controllers.autoLobby.task = task.spawn(function()
+        local lastPress = 0
+        local loggedButtons = false
+        while controllers.autoLobby.enabled do
+            pcall(function()
+                local char = localPlayer.Character
+                if not char then return end
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if not hum or hum.Health > 0 then
+                    loggedButtons = false
+                    return
+                end
+                
+                -- We are dead: wait for death screen buttons
+                task.wait(1)
+                if not controllers.autoLobby.enabled then return end
+                
+                -- Gather all on-screen buttons
+                local allBtns = {}
+                for _, gui in ipairs(pg:GetChildren()) do
+                    if gui:IsA("ScreenGui") and gui.Enabled 
+                       and gui.Name ~= "HeadshotHub" 
+                       and gui.Name ~= "HeadshotGuardDebug" then
+                        for _, d in ipairs(gui:GetDescendants()) do
+                            if d:IsA("GuiButton") and isVisible(d) and not isTouchControl(d) then
+                                local txt = string.lower(getText(d))
+                                local nm = string.lower(d.Name)
+                                table.insert(allBtns, {
+                                    btn = d, text = txt, name = nm,
+                                    pos = d.AbsolutePosition,
+                                })
+                            end
+                        end
+                    end
+                end
+                
+                -- ★ DEBUG: Print buttons to F9 Output when dead
+                if not loggedButtons then
+                    loggedButtons = true
+                    warn("═══ [Auto Lobby] DEATH SCREEN BUTTONS ═══")
+                    for i, info in ipairs(allBtns) do
+                        warn(string.format("[%d] Name='%s' | Text='%s' | Pos=(%d,%d)",
+                            i, info.name, info.text, info.pos.X, info.pos.Y))
+                    end
+                    warn("════════════════════════════════════════")
+                end
+                
+                -- ★ TARGET BUTTON SELECTION
+                local target = nil
+                
+                -- 1) Contains "lobby" / "lobi"
+                for _, info in ipairs(allBtns) do
+                    if info.text:find("lobby") or info.text:find("lobi") 
+                       or info.name:find("lobby") or info.name:find("lobi") then
+                        target = info.btn; break
+                    end
+                end
+                
+                -- 2) "return" / "leave" / "quit" / "menu" / "exit"
+                if not target then
+                    for _, info in ipairs(allBtns) do
+                        if info.text:find("return") or info.text:find("leave")
+                           or info.text:find("quit") or info.text:find("menu")
+                           or info.text:find("exit") then
+                            target = info.btn; break
+                        end
+                    end
+                end
+                
+                -- 3) FALLBACK: bottom-most button that's NOT "revive"/"respawn"
+                if not target and #allBtns >= 2 then
+                    local maxY = -1
+                    for _, info in ipairs(allBtns) do
+                        local t = info.text
+                        if not t:find("revive") and not t:find("respawn") 
+                           and not t:find("yeniden") then
+                            if info.pos.Y > maxY then
+                                maxY = info.pos.Y
+                                target = info.btn
+                            end
+                        end
+                    end
+                end
+                
+                -- Press it
+                local now = tick()
+                if target and now - lastPress > 2 then
+                    pressButton(target)
+                    lastPress = now
+                    warn("[Headshot Hub] Auto Lobby → Pressed: '" .. getText(target) .. "'")
+                end
+                
+                task.wait(1)
+            end)
+            task.wait(0.3)
+        end
+        controllers.autoLobby.task = nil
+    end)
+end
+
+local function stopAutoLobby()
+    controllers.autoLobby.enabled = false
+    if controllers.autoLobby.task then
+        pcall(task.cancel, controllers.autoLobby.task)
+        controllers.autoLobby.task = nil
+    end
+end
+
+local function startAutoGuard()
+    if controllers.autoGuard.task then return end
+    controllers.autoGuard.enabled = true
+    debugPanel.Visible = true
+    
+    controllers.autoGuard.task = task.spawn(function()
+        local lastLog = 0
+        local wasGuard = false
+        while controllers.autoGuard.enabled do
+            local ok, err = pcall(function()
+                if isGuard() then
+                    debugPanel.Visible = false
+                    if not wasGuard then
+                        wasGuard = true
+                        playSound(CONFIG.SoundId, 1)
+                    end
+                    return
+                end
+                
+                wasGuard = false
+                debugPanel.Visible = true
+                local state = getGuardState()
+                
+                if state == "ENROLL" then
+                    local greens = findBtn("Green")
+                    for _, g in ipairs(greens) do pressButton(g) end
+                    local now = tick()
+                    if now - lastLog > 0.5 then
+                        lastLog = now
+                        addLog("ENROLL: " .. #greens .. " Green")
+                        debugPanel.TextColor3 = Color3.fromRGB(0, 255, 100)
+                    end
+                
+                elseif state == "RANKS" then
+                    local w = findBtnTxt("Worker")
+                    local e = findBtn("EquipTier1")
+                    local e2 = findBtnTxt("EQUIP")
+                    for _, x in ipairs(w) do pressButton(x) end
+                    for _, x in ipairs(e) do pressButton(x) end
+                    for _, x in ipairs(e2) do pressButton(x) end
+                    local now = tick()
+                    if now - lastLog > 0.5 then
+                        lastLog = now
+                        addLog("RANKS: Worker=" .. #w .. " Equip=" .. #e .. " EQUIP=" .. #e2)
+                        debugPanel.TextColor3 = Color3.fromRGB(255, 255, 100)
+                    end
+                
+                elseif state == "CONFIRM" then
+                    local l = findBtnTxt("LOCK IN")
+                    local g = findBtn("Green")
+                    for _, x in ipairs(l) do pressButton(x) end
+                    for _, x in ipairs(g) do pressButton(x) end
+                    local now = tick()
+                    if now - lastLog > 0.5 then
+                        lastLog = now
+                        addLog("CONFIRM: LockIn=" .. #l .. " Green=" .. #g)
+                        debugPanel.TextColor3 = Color3.fromRGB(100, 200, 255)
+                    end
+                
+                else
+                    local now = tick()
+                    if now - lastLog > 0.5 then
+                        lastLog = now
+                        local v = Workspace:FindFirstChild("Values")
+                        local cg = v and v:FindFirstChild("CurrentGame")
+                        if cg and cg.Value and cg.Value ~= "" then
+                            addLog("Game: " .. tostring(cg.Value))
+                        else
+                            addLog("Lobby")
+                        end
+                        debugPanel.TextColor3 = Color3.fromRGB(200, 200, 200)
+                    end
+                end
+            end)
+            
+            if not ok then
+                debugPanel.Visible = true
+                debugPanel.Text = "ERROR: " .. tostring(err):sub(1, 200)
+                debugPanel.TextColor3 = Color3.fromRGB(255, 100, 100)
+            end
+            
+            task.wait(0.2)
+        end
+        controllers.autoGuard.task = nil
+    end)
+end
+
+local function stopAutoGuard()
+    controllers.autoGuard.enabled = false
+    debugPanel.Visible = false
+    if controllers.autoGuard.task then
+        pcall(task.cancel, controllers.autoGuard.task)
+        controllers.autoGuard.task = nil
+    end
+end
+
+local function startPermGuard()
+    if controllers.permGuard.task then return end
+    controllers.permGuard.enabled = true
+    controllers.permGuard.task = task.spawn(function()
+        while controllers.permGuard.enabled do
+            pcall(function()
+                localPlayer:SetAttribute("__OwnsPermGuard", true)
+                localPlayer:SetAttribute("__OwnsPermGuardClient", true)
+            end)
+            task.wait(0.3)
+        end
+        controllers.permGuard.task = nil
+    end)
+end
+
+local function stopPermGuard()
+    controllers.permGuard.enabled = false
+    if controllers.permGuard.task then
+        pcall(task.cancel, controllers.permGuard.task)
+        controllers.permGuard.task = nil
+    end
+    pcall(function()
+        localPlayer:SetAttribute("__OwnsPermGuard", nil)
+        localPlayer:SetAttribute("__OwnsPermGuardClient", nil)
+    end)
+end
+
+local function startArcade()
+    if controllers.wonFarm.enabled then return end
+    controllers.wonFarm.enabled = true
+    toggleArcade(true)
+end
+
+local function stopArcade()
+    controllers.wonFarm.enabled = false
+    toggleArcade(false)
+end
+
+localPlayer.CharacterAdded:Connect(function()
+    task.wait(3)
+    if controllers.autoJoin.enabled then teleportToRing() end
+    if controllers.wonFarm.enabled then
+        toggleArcade(false); task.wait(0.5); toggleArcade(true)
+    end
+end)
+
+-- ═══════════════════════════════════════════════
+-- ★ UI - FLUENT STYLE (COMPACT)
+-- ═══════════════════════════════════════════════
+local oldGui = pg:FindFirstChild("HeadshotHub")
+if oldGui then oldGui:Destroy() end
+
+local sg = Instance.new("ScreenGui")
+sg.Name = "HeadshotHub"
+sg.ResetOnSpawn = false
+sg.DisplayOrder = 99999
+sg.IgnoreGuiInset = true
+sg.Parent = pg
+
+-- Mini button
+local miniBtn = Instance.new("TextButton")
+miniBtn.Size = UDim2.new(0, 40, 0, 40)
+miniBtn.Position = UDim2.new(0, 20, 0.5, -20)
+miniBtn.BackgroundColor3 = THEME.Bg
+miniBtn.Text = "H"
+miniBtn.TextColor3 = THEME.Purple
+miniBtn.Font = Enum.Font.GothamBold
+miniBtn.TextSize = 18
+miniBtn.BorderSizePixel = 0
+miniBtn.Visible = false
+miniBtn.Active = true
+miniBtn.Draggable = true
+miniBtn.Parent = sg
+local mc = Instance.new("UICorner"); mc.CornerRadius = UDim.new(1,0); mc.Parent = miniBtn
+local ms = Instance.new("UIStroke"); ms.Color = THEME.Purple; ms.Thickness = 2; ms.Parent = miniBtn
+
+-- ★ MAIN WINDOW (360x280)
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 360, 0, 280)
+main.Position = UDim2.new(0.5, -180, 0.5, -140)
+main.BackgroundColor3 = THEME.Bg
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = sg
+local mcor = Instance.new("UICorner"); mcor.CornerRadius = UDim.new(0,8); mcor.Parent = main
+local mstr = Instance.new("UIStroke"); mstr.Color = THEME.Stroke; mstr.Thickness = 1.5; mstr.Parent = main
+
+-- ★ LEFT SIDEBAR (95px)
+local sidebar = Instance.new("Frame")
+sidebar.Size = UDim2.new(0, 95, 1, 0)
+sidebar.BackgroundColor3 = THEME.BgLight
+sidebar.BorderSizePixel = 0
+sidebar.Parent = main
+local sbc = Instance.new("UICorner"); sbc.CornerRadius = UDim.new(0,8); sbc.Parent = sidebar
+local sbcv = Instance.new("Frame")
+sbcv.Size = UDim2.new(0, 8, 1, 0); sbcv.Position = UDim2.new(1, -8, 0, 0)
+sbcv.BackgroundColor3 = THEME.BgLight; sbcv.BorderSizePixel = 0; sbcv.Parent = sidebar
+
+-- Sidebar logo
+local logoLbl = Instance.new("TextLabel")
+logoLbl.Size = UDim2.new(1, -14, 0, 16); logoLbl.Position = UDim2.new(0, 10, 0, 10)
+logoLbl.BackgroundTransparency = 1
+logoLbl.Text = "Headshot Hub"
+logoLbl.TextColor3 = THEME.Text
+logoLbl.Font = Enum.Font.GothamBold; logoLbl.TextSize = 11
+logoLbl.TextXAlignment = Enum.TextXAlignment.Left
+logoLbl.Parent = sidebar
+
+local subLbl = Instance.new("TextLabel")
+subLbl.Size = UDim2.new(1, -14, 0, 10); subLbl.Position = UDim2.new(0, 10, 0, 26)
+subLbl.BackgroundTransparency = 1
+subLbl.Text = "v1.0"
+subLbl.TextColor3 = THEME.TextDim
+subLbl.Font = Enum.Font.Gotham; subLbl.TextSize = 8
+subLbl.TextXAlignment = Enum.TextXAlignment.Left
+subLbl.Parent = sidebar
+
+-- ★ RIGHT CONTENT AREA
+local contentFrame = Instance.new("Frame")
+contentFrame.Size = UDim2.new(1, -95, 1, 0)
+contentFrame.Position = UDim2.new(0, 95, 0, 0)
+contentFrame.BackgroundTransparency = 1
+contentFrame.Parent = main
+
+-- Page title
+local pageTitle = Instance.new("TextLabel")
+pageTitle.Size = UDim2.new(1, -70, 0, 22); pageTitle.Position = UDim2.new(0, 14, 0, 10)
+pageTitle.BackgroundTransparency = 1
+pageTitle.Text = "Auto Farm"
+pageTitle.TextColor3 = THEME.Text
+pageTitle.Font = Enum.Font.GothamBold; pageTitle.TextSize = 14
+pageTitle.TextXAlignment = Enum.TextXAlignment.Left
+pageTitle.Parent = contentFrame
+
+-- ★ MINIMIZE BUTTON
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 20, 0, 20); minBtn.Position = UDim2.new(1, -48, 0, 12)
+minBtn.BackgroundColor3 = THEME.BgRow; minBtn.Text = "—"
+minBtn.TextColor3 = THEME.Text
+minBtn.Font = Enum.Font.GothamBold; minBtn.TextSize = 12; minBtn.BorderSizePixel = 0
+minBtn.AutoButtonColor = false
+minBtn.Parent = contentFrame
+local minc = Instance.new("UICorner"); minc.CornerRadius = UDim.new(0,5); minc.Parent = minBtn
+local mins = Instance.new("UIStroke"); mins.Color = THEME.Stroke; mins.Thickness = 1; mins.Parent = minBtn
+
+-- ★ CLOSE BUTTON
+local clBtn = Instance.new("TextButton")
+clBtn.Size = UDim2.new(0, 20, 0, 20); clBtn.Position = UDim2.new(1, -24, 0, 12)
+clBtn.BackgroundColor3 = THEME.BgRow; clBtn.Text = "X"
+clBtn.TextColor3 = THEME.Text
+clBtn.Font = Enum.Font.GothamBold; clBtn.TextSize = 10; clBtn.BorderSizePixel = 0
+clBtn.AutoButtonColor = false
+clBtn.Parent = contentFrame
+local clc = Instance.new("UICorner"); clc.CornerRadius = UDim.new(0,5); clc.Parent = clBtn
+local cls = Instance.new("UIStroke"); cls.Color = THEME.Stroke; cls.Thickness = 1; cls.Parent = clBtn
+
+-- ★ SIDEBAR TAB BUTTONS
+local pages = {}
+local tabButtons = {}
+
+local function createSideTab(name, tabId, order)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -12, 0, 24); btn.Position = UDim2.new(0, 6, 0, 44 + (order-1) * 28)
+    btn.BackgroundColor3 = THEME.BgLight
+    btn.BackgroundTransparency = 1
+    btn.Text = "  " .. name
+    btn.TextColor3 = THEME.TextDim
+    btn.Font = Enum.Font.GothamBold; btn.TextSize = 10
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.BorderSizePixel = 0; btn.AutoButtonColor = false
+    btn.Parent = sidebar
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,5); c.Parent = btn
+    
+    local accent = Instance.new("Frame")
+    accent.Size = UDim2.new(0, 2, 0, 12); accent.Position = UDim2.new(0, 0, 0.5, -6)
+    accent.BackgroundColor3 = THEME.Purple
+    accent.BorderSizePixel = 0
+    accent.Visible = false
+    accent.Parent = btn
+    local ac = Instance.new("UICorner"); ac.CornerRadius = UDim.new(1,0); ac.Parent = accent
+    
+    tabButtons[tabId] = {btn = btn, accent = accent}
+    
+    local function setActive(active)
+        if active then
+            btn.BackgroundTransparency = 0
+            btn.BackgroundColor3 = THEME.BgRow
+            btn.TextColor3 = THEME.Text
+            accent.Visible = true
+        else
+            btn.BackgroundTransparency = 1
+            btn.BackgroundColor3 = THEME.BgLight
+            btn.TextColor3 = THEME.TextDim
+            accent.Visible = false
+        end
+    end
+    
+    btn.MouseButton1Click:Connect(function()
+        for id, p in pairs(pages) do
+            if id == tabId then p.frame.Visible = true; p.setActive(true)
+            else p.frame.Visible = false; p.setActive(false) end
+        end
+        pageTitle.Text = name
+    end)
+    
+    return btn, setActive
+end
+
+-- Auto Farm Frame
+local afFrame = Instance.new("Frame")
+afFrame.Size = UDim2.new(1, -24, 1, -46); afFrame.Position = UDim2.new(0, 12, 0, 38)
+afFrame.BackgroundTransparency = 1
+afFrame.Visible = true; afFrame.Parent = contentFrame
+local afLayout = Instance.new("UIListLayout")
+afLayout.Padding = UDim.new(0, 5); afLayout.SortOrder = Enum.SortOrder.LayoutOrder
+afLayout.Parent = afFrame
+
+-- Settings Frame
+local setFrame = Instance.new("Frame")
+setFrame.Size = UDim2.new(1, -24, 1, -46); setFrame.Position = UDim2.new(0, 12, 0, 38)
+setFrame.BackgroundTransparency = 1
+setFrame.Visible = false; setFrame.Parent = contentFrame
+local setLayout = Instance.new("UIListLayout")
+setLayout.Padding = UDim.new(0, 5); setLayout.SortOrder = Enum.SortOrder.LayoutOrder
+setLayout.Parent = setFrame
+
+-- Create sidebar tabs
+local afBtn, afSetActive = createSideTab("Auto Farm", "autofarm", 1)
+local setBtn, setSetActive = createSideTab("Settings", "settings", 2)
+
+pages.autofarm = {frame=afFrame, setActive=afSetActive}
+pages.settings = {frame=setFrame, setActive=setSetActive}
+afSetActive(true); setSetActive(false)
+
+-- ═══════════════════════════════════════════════
+-- TOGGLE (Fluent style - Compact)
+-- ═══════════════════════════════════════════════
+local function createToggle(parent, order, title, desc, initialValue, callback)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 42)
+    row.BackgroundColor3 = THEME.BgRow; row.BorderSizePixel = 0
+    row.LayoutOrder = order; row.Parent = parent
+    local rc = Instance.new("UICorner"); rc.CornerRadius = UDim.new(0,6); rc.Parent = row
+    local rs = Instance.new("UIStroke"); rs.Color = THEME.Stroke
+    rs.Thickness = 1; rs.Parent = row
+
+    local tlbl2 = Instance.new("TextLabel")
+    tlbl2.Size = UDim2.new(1, -80, 0, 14); tlbl2.Position = UDim2.new(0, 10, 0, 6)
+    tlbl2.BackgroundTransparency = 1; tlbl2.Text = title
+    tlbl2.TextColor3 = THEME.Text; tlbl2.Font = Enum.Font.GothamBold
+    tlbl2.TextSize = 11; tlbl2.TextXAlignment = Enum.TextXAlignment.Left
+    tlbl2.Parent = row
+
+    local dlbl = Instance.new("TextLabel")
+    dlbl.Size = UDim2.new(1, -80, 0, 12); dlbl.Position = UDim2.new(0, 10, 0, 21)
+    dlbl.BackgroundTransparency = 1; dlbl.Text = desc
+    dlbl.TextColor3 = THEME.TextDim; dlbl.Font = Enum.Font.Gotham
+    dlbl.TextSize = 8; dlbl.TextXAlignment = Enum.TextXAlignment.Left
+    dlbl.Parent = row
+
+    local sw = Instance.new("TextButton")
+    sw.Size = UDim2.new(0, 34, 0, 18); sw.Position = UDim2.new(1, -44, 0.5, -9)
+    sw.BackgroundColor3 = THEME.Off; sw.Text = ""; sw.BorderSizePixel = 0
+    sw.AutoButtonColor = false; sw.Parent = row
+    local swc = Instance.new("UICorner"); swc.CornerRadius = UDim.new(1,0); swc.Parent = sw
+    local sws = Instance.new("UIStroke"); sws.Color = THEME.Stroke; sws.Thickness = 1; sws.Parent = sw
+
+    local thumb = Instance.new("Frame")
+    thumb.Size = UDim2.new(0, 14, 0, 14); thumb.Position = UDim2.new(0, 2, 0.5, -7)
+    thumb.BackgroundColor3 = Color3.fromRGB(160,160,165)
+    thumb.BorderSizePixel = 0; thumb.Parent = sw
+    local thc = Instance.new("UICorner"); thc.CornerRadius = UDim.new(1,0); thc.Parent = thumb
+
+    local isOn = initialValue or false
+    local function update()
+        if isOn then
+            sw.BackgroundColor3 = THEME.Purple; sws.Color = THEME.Purple
+            thumb.BackgroundColor3 = THEME.Bg
+            thumb.Position = UDim2.new(1, -16, 0.5, -7)
+        else
+            sw.BackgroundColor3 = THEME.Off; sws.Color = THEME.Stroke
+            thumb.BackgroundColor3 = Color3.fromRGB(160,160,165)
+            thumb.Position = UDim2.new(0, 2, 0.5, -7)
+        end
+    end
+    update()
+
+    local ref = {
+        isOn = function() return isOn end,
+        setValue = function(v) isOn = v and true or false; update() end,
+    }
+    sw.MouseButton1Click:Connect(function()
+        isOn = not isOn; update()
+        if callback then task.spawn(callback, isOn) end
+    end)
+    return ref
+end
+
+refs.AutoArcade = createToggle(afFrame, 1, "Auto Arcade", "Auto money from arcade machine", false, function(on)
+    toggleStates.AutoArcade = on
+    if on then startArcade(); notify("Headshot Hub", "Auto Arcade: ON")
+    else stopArcade(); notify("Headshot Hub", "Auto Arcade: OFF") end
+    if toggleStates.AutoLoad then saveConfig() end
+end)
+
+refs.AutoJoin = createToggle(afFrame, 2, "Auto Join", "TPs to ring in lobby + presses check", false, function(on)
+    toggleStates.AutoJoin = on
+    if on then startAutoJoin(); notify("Headshot Hub", "Auto Join: ON")
+    else stopAutoJoin(); notify("Headshot Hub", "Auto Join: OFF") end
+    if toggleStates.AutoLoad then saveConfig() end
+end)
+
+refs.AutoLobby = createToggle(afFrame, 3, "Auto Lobby", "Auto presses Lobby button when you die", false, function(on)
+    toggleStates.AutoLobby = on
+    if on then startAutoLobby(); notify("Headshot Hub", "Auto Lobby: ON")
+    else stopAutoLobby(); notify("Headshot Hub", "Auto Lobby: OFF") end
+    if toggleStates.AutoLoad then saveConfig() end
+end)
+
+refs.AutoBecomeGuard = createToggle(afFrame, 4, "Auto Become Guard", "Becomes guard by name + coordinates", false, function(on)
+    toggleStates.AutoBecomeGuard = on
+    if on then startAutoGuard(); notify("Headshot Hub", "Auto Guard: ON")
+    else stopAutoGuard(); notify("Headshot Hub", "Auto Guard: OFF") end
+    if toggleStates.AutoLoad then saveConfig() end
+end)
+
+refs.FreePermGuard = createToggle(afFrame, 5, "Free Permanent Guard", "Perm Guard attribute activated", false, function(on)
+    toggleStates.FreePermGuard = on
+    if on then startPermGuard(); notify("Headshot Hub", "Free Perm Guard: ON")
+    else stopPermGuard(); notify("Headshot Hub", "Free Perm Guard: OFF") end
+    if toggleStates.AutoLoad then saveConfig() end
+end)
+
+refs.AutoLoad = createToggle(setFrame, 1, "Auto Turn On Scripts",
+    "Auto enables toggles when script is executed", false, function(on)
+        toggleStates.AutoLoad = on
+        if on then saveConfig(); notify("Settings", "Auto Load: ON")
+        else notify("Settings", "Auto Load: OFF") end
+    end)
+
+local saveBtn = Instance.new("TextButton")
+saveBtn.Size = UDim2.new(1, 0, 0, 30); saveBtn.BackgroundColor3 = THEME.Purple
+saveBtn.Text = "Save Current Settings"; saveBtn.TextColor3 = THEME.Bg
+saveBtn.Font = Enum.Font.GothamBold; saveBtn.TextSize = 10
+saveBtn.BorderSizePixel = 0; saveBtn.LayoutOrder = 2; saveBtn.Parent = setFrame
+local sbc2 = Instance.new("UICorner"); sbc2.CornerRadius = UDim.new(0,6); sbc2.Parent = saveBtn
+saveBtn.MouseButton1Click:Connect(function()
+    if saveConfig() then notify("Settings", "Manually saved")
+    else notify("Settings", "Save failed") end
+end)
+
+local info = Instance.new("Frame")
+info.Size = UDim2.new(1, 0, 0, 100); info.BackgroundColor3 = THEME.BgRow
+info.BorderSizePixel = 0; info.LayoutOrder = 3; info.Parent = setFrame
+local ifc = Instance.new("UICorner"); ifc.CornerRadius = UDim.new(0,6); ifc.Parent = info
+local ifs = Instance.new("UIStroke"); ifs.Color = THEME.Stroke
+ifs.Thickness = 1; ifs.Parent = info
+
+local ifT = Instance.new("TextLabel")
+ifT.Size = UDim2.new(1, -14, 0, 14); ifT.Position = UDim2.new(0, 8, 0, 6)
+ifT.BackgroundTransparency = 1; ifT.Text = "HOW IT WORKS?"
+ifT.TextColor3 = THEME.Text; ifT.Font = Enum.Font.GothamBold
+ifT.TextSize = 10; ifT.TextXAlignment = Enum.TextXAlignment.Left
+ifT.Parent = info
+
+local ifD = Instance.new("TextLabel")
+ifD.Size = UDim2.new(1, -14, 0, 76); ifD.Position = UDim2.new(0, 8, 0, 22)
+ifD.BackgroundTransparency = 1
+ifD.Text = "1. Enable the toggles you want in the Auto Farm tab\n2. Enable Auto Turn On Scripts\n3. Join a new game, execute the script\n4. Saved toggles auto-enable"
+ifD.TextColor3 = THEME.TextDim; ifD.Font = Enum.Font.Gotham
+ifD.TextSize = 9; ifD.TextXAlignment = Enum.TextXAlignment.Left
+ifD.TextYAlignment = Enum.TextYAlignment.Top
+ifD.TextWrapped = true; ifD.Parent = info
+
+-- ★★★ MINIMIZE / EXPAND / CLOSE ★★★
+local lastPos = main.Position
+
+minBtn.MouseButton1Click:Connect(function()
+    lastPos = main.Position
+    main.Visible = false
+    miniBtn.Visible = true
+    miniBtn.Position = UDim2.new(0, 20, 0.5, -20)
+end)
+
+miniBtn.MouseButton1Click:Connect(function()
+    miniBtn.Visible = false
+    main.Visible = true
+    main.Position = lastPos
+    playSound(CONFIG.SoundId, 1)  -- ★ Only HEADSHOT sound here
+end)
+
+clBtn.MouseButton1Click:Connect(function()
+    stopAutoJoin(); stopAutoLobby(); stopAutoGuard(); stopPermGuard(); stopArcade()
+    if debugSg then debugSg:Destroy() end
+    sg:Destroy()
+end)
+
+task.spawn(function()
+    task.wait(0.5)
+    local data = loadConfig()
+    if not data then notify("Headshot Hub", "No saved config", 2); return end
+    if data.AutoLoad then
+        toggleStates.AutoLoad = true; refs.AutoLoad:setValue(true)
+        if data.AutoArcade then
+            toggleStates.AutoArcade = true; refs.AutoArcade:setValue(true); startArcade()
+        end
+        if data.AutoJoin then
+            toggleStates.AutoJoin = true; refs.AutoJoin:setValue(true); startAutoJoin()
+        end
+        if data.AutoLobby then
+            toggleStates.AutoLobby = true; refs.AutoLobby:setValue(true); startAutoLobby()
+        end
+        if data.AutoBecomeGuard then
+            toggleStates.AutoBecomeGuard = true; refs.AutoBecomeGuard:setValue(true); startAutoGuard()
+        end
+        if data.FreePermGuard then
+            toggleStates.FreePermGuard = true; refs.FreePermGuard:setValue(true); startPermGuard()
+        end
+        notify("Headshot Hub", "Auto loaded!", 3)
+    end
+end)
+
+-- ★★★ OPENING SOUND - 18362692980 ★★★
+task.spawn(function()
+    task.wait(0.8)
+    playSound(CONFIG.SoundId, 1)
+end)
+
+notify("Headshot Hub", "v1.0 Loaded", 4)
+
+_G.HeadshotHubCleanup = function()
+    stopAutoJoin(); stopAutoLobby(); stopAutoGuard(); stopPermGuard(); stopArcade()
+    if debugSg then debugSg:Destroy() end
+    if sg then sg:Destroy() end
+end
